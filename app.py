@@ -4,20 +4,17 @@ import json
 import time
 
 # --- Configuration ---
-# You MUST set your API Key in the Streamlit Secrets (st.secrets) or environment variables.
-# For local testing, you can use st.secrets.GEMINI_API_KEY if you set up a secrets.toml file,
-# or uncomment the line below and replace 'YOUR_API_KEY' with your actual key.
-# IMPORTANT: For deployment, use Streamlit Secrets or environment variables for security.
+# The API Key is fetched securely from Streamlit secrets.
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
 except:
-    # Fallback for local testing without secrets.toml (REMOVE FOR PRODUCTION)
-    API_KEY = "" # Replace with your key for quick local test if needed
+    # If running locally without secrets.toml, this will fail the API call gracefully.
+    API_KEY = "" 
 
 API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={API_KEY}"
 
-# --- JSON Schema for Structured Output ---
-# This ensures the AI returns standardized, machine-readable data.
+# --- JSON Schema for Structured Output (UPDATED) ---
+# Added 'suggestedTests' property to standardize next steps in care.
 RESPONSE_SCHEMA = {
     "type": "OBJECT",
     "properties": {
@@ -36,6 +33,11 @@ RESPONSE_SCHEMA = {
             "type": "ARRAY",
             "items": {"type": "STRING"},
             "description": "A list of 3 most likely alternative diagnoses (DDx), ranked by likelihood."
+        },
+        "suggestedTests": {
+            "type": "ARRAY",
+            "items": {"type": "STRING"},
+            "description": "A list of 3-5 necessary diagnostic tests or labs based on the primary and differential diagnoses to confirm the next steps."
         }
     }
 }
@@ -48,10 +50,13 @@ def call_gemini_api(conversation):
         st.error("API Key is missing. Please set GEMINI_API_KEY in your Streamlit secrets or environment.")
         return None
 
+    # UPDATED SYSTEM PROMPT: Now includes instruction for suggested tests.
     system_prompt = (
         "You are a specialized AI clinical documentation assistant integrated into the Preventify EHR. "
         "Your task is to process a doctor-patient conversation, extract critical information, and format it into a "
-        "standardized JSON structure conforming strictly to the provided schema. The output must be valid JSON only."
+        "standardized JSON structure conforming strictly to the provided schema. In addition to documentation, "
+        "you MUST propose a primary diagnosis, a differential diagnosis, and **3-5 necessary diagnostic tests or labs** "
+        "based on the clinical data. The output must be valid JSON only."
     )
     user_query = f"Process the following doctor-patient conversation: \"{conversation}\""
     
@@ -71,17 +76,16 @@ def call_gemini_api(conversation):
                 API_URL, 
                 headers={'Content-Type': 'application/json'}, 
                 data=json.dumps(payload),
-                timeout=30 # Set a reasonable timeout
+                timeout=30 
             )
             
             if response.status_code == 429 and i < max_retries - 1:
-                # Exponential backoff for rate limiting
                 delay = 2 ** i + (time.monotonic() * 0.1)
                 st.warning(f"Rate limit hit. Retrying in {delay:.2f} seconds...")
                 time.sleep(delay)
                 continue
             
-            response.raise_for_status() # Raise exception for bad status codes
+            response.raise_for_status() 
             
             result = response.json()
             json_text = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text')
@@ -97,7 +101,7 @@ def call_gemini_api(conversation):
             return None
         except json.JSONDecodeError:
             st.error("The AI returned a non-JSON response. This is often due to a complex prompt or internal error.")
-            st.code(response.text) # Show raw response for debugging
+            st.code(response.text)
             return None
     
     st.error("Failed to get a response after multiple retries.")
@@ -137,10 +141,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="main-header">Preventify AI Co-Pilot Prototype</p>', unsafe_allow_html=True)
-st.markdown('<p style="text-align:center; color:#c9d1d9;">Transforming unstructured doctor-patient dialogue into standardized EHR data.</p>', unsafe_allow_html=True)
+st.markdown('<p style="text-align:center; color:#c9d1d9;">Transforming unstructured doctor-patient dialogue into standardized EHR data and next-step actions.</p>', unsafe_allow_html=True)
 st.divider()
 
-# Example Conversation to preload
+# Example Conversation to preload (The musculoskeletal complaint)
 default_conversation = """
 Doctor: Good morning. What brings you in today?
 Patient: Good morning, Doctor. I've been feeling unusually tired and my joints, especially my knees and wrists, have been aching for about two months now. It's much worse right when I wake up.
@@ -172,7 +176,6 @@ with col1:
             with st.spinner('AI Co-Pilot is generating standardized notes and diagnoses...'):
                 structured_data = call_gemini_api(conversation_input)
             
-            # Store the result in session state for display in the second column
             st.session_state['structured_data'] = structured_data
 
 with col2:
@@ -204,13 +207,26 @@ with col2:
         ddx_list = data.get('differentialDiagnosis', [])
         if ddx_list:
             st.markdown(
-                "The AI Co-Pilot provides these alternative diagnoses to ensure all standardized protocols are considered:"
+                "The AI Co-Pilot provides these alternative diagnoses to prevent diagnostic drift:"
             )
             for i, ddx in enumerate(ddx_list, 1):
                 st.write(f"**{i}.** {ddx}")
         else:
             st.write("No differential diagnoses suggested.")
-
+        st.divider() 
+        
+        # --- Display Suggested Tests (NEW SECTION) ---
+        st.markdown("### Suggested Diagnostic Tests")
+        test_list = data.get('suggestedTests', [])
+        if test_list:
+            st.markdown(
+                "The AI suggests the following tests to confirm the diagnosis and establish a baseline, ensuring **standardized clinical pathways** are followed:"
+            )
+            for i, test in enumerate(test_list, 1):
+                st.write(f"**{i}.** {test}")
+        else:
+            st.write("No diagnostic tests suggested.")
+            
     else:
         st.markdown("<p style='color:#8b949e; margin-top: 15px;'>Click 'Process with AI Co-Pilot' to see the standardized output here.</p>", unsafe_allow_html=True)
 
